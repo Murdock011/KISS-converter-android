@@ -2,7 +2,7 @@ name: Android APK
 
 on:
   push:
-    branches: [main, "claude/**"]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -61,10 +61,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: core
-
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-ndk
 
       - name: Test the Rust core (on the runner)
         working-directory: core
