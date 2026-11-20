@@ -1,0 +1,43 @@
+[package]
+name = "convert_core"
+version = "0.1.0"
+edition = "2021"
+description = "Rust conversion engine for the Android converter app"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "convert_core"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[[bin]]
+name = "convert-cli"
+path = "src/bin/cli.rs"
+
+[features]
+bindgen = ["uniffi/cli"]
+# Link FFmpeg (and its codec libraries) into the .so. Used for Android.
+static-ffmpeg = ["ffmpeg-next/static"]
+
+[dependencies]
+uniffi = "0.28"
+thiserror = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff", "ico"] }
+ffmpeg-next = { version = "7.1", default-features = false, features = ["codec", "format", "filter", "software-resampling", "software-scaling"] }
+ffmpeg-sys-next = { version = "7.1", default-features = false }
+pulldown-cmark = { version = "0.12", default-features = false }
+quick-xml = "0.37"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+printpdf = { version = "0.7", default-features = false, features = ["font_subsetting"] }
+tl = "0.7"
+ttf-parser = "0.19"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1
+panic = "unwind"

@@ -1,0 +1,6 @@
+<resources>
+    <!-- Compose draws the real Material 3 theme. This is only for the window. -->
+    <style name="Theme.Converter" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/background</item>
+    </style>
+</resources>
