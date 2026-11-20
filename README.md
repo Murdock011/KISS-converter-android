@@ -32,13 +32,12 @@ Install `app-release.apk` on the phone (it is signed with a debug key, for testi
 
 ## Build on your computer
 
-Needs: Android SDK and NDK, Rust, `cargo-ndk`, `nasm`, `pkg-config`, FFmpeg dev
+Needs: Android SDK and NDK, Rust, `nasm`, `pkg-config`, FFmpeg dev
 headers for your computer (for the bindings step).
 
 ```bash
 export ANDROID_NDK_HOME=/path/to/ndk
 rustup target add aarch64-linux-android
-cargo install cargo-ndk
 
 scripts/build-ffmpeg-android.sh arm64-v8a build/ffmpeg/arm64-v8a   # about 15 minutes
 scripts/build-core-android.sh build/ffmpeg arm64-v8a
