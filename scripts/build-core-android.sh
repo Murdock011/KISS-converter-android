@@ -44,5 +44,29 @@ for abi in "${ABIS[@]}"; do
   mkdir -p "$JNI/$abi"
   cp "target/$rust/release/libconvert_core.so" "$JNI/$abi/"
   "$TC/bin/llvm-strip" --strip-unneeded "$JNI/$abi/libconvert_core.so"
+
+  # A shared library links even with missing symbols, and then fails to load
+  # on the phone. Check that each needed symbol comes from an Android system library.
+  so="$JNI/$abi/libconvert_core.so"
+  libdir="$SYSROOT/usr/lib/$clang/$API"
+  [ -d "$libdir" ] || libdir="$SYSROOT/usr/lib/${clang/armv7a/arm}/$API"
+  needed=$("$TC/bin/llvm-readelf" -d "$so" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p')
+  echo "NEEDED: $needed"
+  provided=$(mktemp)
+  for lib in $needed; do
+    if [ -f "$libdir/$lib" ]; then
+      "$TC/bin/llvm-nm" -D --defined-only "$libdir/$lib" | awk '{print $NF}' | sed 's/@.*//' >> "$provided"
+    else
+      echo "ERROR: $lib is not an Android system library"; exit 1
+    fi
+  done
+  sort -u -o "$provided" "$provided"
+  missing=$("$TC/bin/llvm-nm" -D --undefined-only "$so" | awk '$1=="U"{print $2}' | sed 's/@.*//' | sort -u | comm -23 - "$provided")
+  if [ -n "$missing" ]; then
+    echo "ERROR: libconvert_core.so needs symbols that no system library has:"
+    echo "$missing" | head -50
+    exit 1
+  fi
+  echo "OK: all symbols of libconvert_core.so are found"
 done
 ls -la "$JNI"/*
