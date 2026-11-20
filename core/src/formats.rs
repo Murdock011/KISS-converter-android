@@ -6,6 +6,7 @@ pub enum FileKind {
     Audio,
     Video,
     Pdf,
+    Document,
     Unknown,
 }
 
@@ -17,6 +18,9 @@ pub const AUDIO_OUT: &[&str] = &["mp3", "m4a", "ogg", "opus", "flac", "wav"];
 
 pub const VIDEO_IN: &[&str] = &["mp4", "mkv", "webm", "mov", "avi", "3gp", "m4v", "flv", "ts", "wmv"];
 pub const VIDEO_OUT: &[&str] = &["mp4", "mkv", "webm", "mov", "avi", "gif"];
+
+pub const DOC_IN: &[&str] = &["txt", "md", "markdown", "html", "htm", "docx", "odt", "rtf"];
+pub const DOC_OUT: &[&str] = &["pdf", "docx", "odt", "html", "md", "txt"];
 
 pub fn ext_of(path: &str) -> String {
     std::path::Path::new(path)
@@ -31,6 +35,8 @@ fn norm(ext: &str) -> String {
     match e.as_str() {
         "jpeg" => "jpg".into(),
         "tif" => "tiff".into(),
+        "markdown" => "md".into(),
+        "htm" => "html".into(),
         _ => e,
     }
 }
@@ -46,6 +52,8 @@ pub fn kind_of(ext: &str) -> FileKind {
         FileKind::Audio
     } else if VIDEO_IN.contains(&e) || VIDEO_OUT.contains(&e) {
         FileKind::Video
+    } else if DOC_IN.contains(&e) {
+        FileKind::Document
     } else {
         FileKind::Unknown
     }
@@ -65,6 +73,7 @@ pub fn targets_for(input_ext: &str) -> Vec<&'static str> {
             v.extend(AUDIO_OUT.iter().copied());
             v
         }
+        FileKind::Document => keep_other(DOC_OUT),
         // PDF to images is done by Android's PdfRenderer in the app.
         FileKind::Pdf | FileKind::Unknown => Vec::new(),
     }
@@ -75,7 +84,13 @@ pub fn all_inputs() -> Vec<&'static str> {
     v.extend(IMAGE_IN);
     v.extend(AUDIO_IN);
     v.extend(VIDEO_IN);
+    v.extend(DOC_IN);
     v
+}
+
+/// The short form of an extension ("jpeg" -> "jpg", "htm" -> "html").
+pub fn normalize(ext: &str) -> String {
+    norm(ext)
 }
 
 #[cfg(test)]
@@ -98,5 +113,8 @@ mod tests {
         assert!(targets_for("mp4").contains(&"mp3"));
         assert!(targets_for("mp4").contains(&"gif"));
         assert!(!targets_for("mp3").contains(&"mp4"));
+        assert_eq!(kind_of("docx"), FileKind::Document);
+        assert!(targets_for("docx").contains(&"pdf"));
+        assert!(!targets_for("markdown").contains(&"md"));
     }
 }

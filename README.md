@@ -5,6 +5,9 @@ An Android app that converts files on the phone. No upload. No internet.
 - **Images:** JPG, PNG, WebP, GIF, BMP, TIFF, ICO. Many images to one PDF.
 - **Audio:** MP3, M4A (AAC), OGG, OPUS, FLAC, WAV.
 - **Video:** MP4, MKV, WebM, MOV, AVI, GIF. Video to audio only.
+- **Documents:** DOCX, ODT, RTF, HTML, Markdown, TXT in. PDF, DOCX, ODT, HTML,
+  Markdown, TXT out. Text, headings, bold, italic, lists, links and tables are kept.
+  Pictures and page layout in documents are not kept.
 - **PDF:** pages to PNG or JPG.
 
 ## How it is made
@@ -14,6 +17,7 @@ An Android app that converts files on the phone. No upload. No internet.
 | Conversion engine | Rust (`core/`): `image` crate for pictures, FFmpeg through `ffmpeg-next` for audio and video, a small PDF writer |
 | Bridge to Kotlin | UniFFI (Kotlin bindings, JNA) |
 | Screens | Kotlin, Jetpack Compose, Material Design 3 (Material You colours on Android 12+) |
+| Documents | Own readers and writers in Rust (`core/src/doc`): `pulldown-cmark`, `quick-xml`, `zip`, `tl`, `printpdf` |
 | PDF to images | Android `PdfRenderer` |
 
 FFmpeg is built for Android with LAME (MP3), Opus and libvpx (VP8/VP9).
@@ -54,6 +58,8 @@ cargo run --bin convert-cli -- --pdf out.pdf page1.jpg page2.png
 
 - H.264 video (OpenH264 or Android MediaCodec).
 - HEIC and AVIF images.
+- Chinese, Japanese and Korean text in document-to-PDF (needs a CJK font).
+- Pictures inside documents; old Office files (DOC); spreadsheets.
 - `x86_64` and `armeabi-v7a` builds.
 - Run long video conversions in a foreground service.
 

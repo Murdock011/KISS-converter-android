@@ -3,6 +3,7 @@
 //! Kotlin calls the functions in this file through UniFFI.
 //! All work happens on the device. No network is used.
 
+mod doc;
 mod formats;
 mod image_conv;
 mod media;
@@ -117,8 +118,8 @@ pub fn convert(
     listener: Option<Box<dyn ProgressListener>>,
 ) -> Result<(), ConvertError> {
     let progress = Progress(listener.as_deref());
-    let in_ext = formats::ext_of(&input);
-    let out_ext = formats::ext_of(&output);
+    let in_ext = formats::normalize(&formats::ext_of(&input));
+    let out_ext = formats::normalize(&formats::ext_of(&output));
 
     if !Path::new(&input).exists() {
         return Err(ConvertError::Input { msg: format!("{input} does not exist") });
@@ -134,6 +135,7 @@ pub fn convert(
         (FileKind::Image, FileKind::Pdf) => {
             pdf::images_to_pdf(&[input.clone()], &output, &options, &progress)
         }
+        (FileKind::Document, _) => doc::convert(&input, &output, &in_ext, &out_ext, &progress),
         (FileKind::Audio | FileKind::Video, _) => {
             media::convert(&input, &output, &out_ext, &options, &progress)
         }

@@ -64,6 +64,10 @@ object Files {
                 "opus" -> "audio/ogg"
                 "m4a" -> "audio/mp4"
                 "mkv" -> "video/x-matroska"
+                "md" -> "text/markdown"
+                "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                "odt" -> "application/vnd.oasis.opendocument.text"
+                "rtf" -> "application/rtf"
                 else -> "application/octet-stream"
             }
 

@@ -27,6 +27,7 @@ import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
 import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FileOpen
@@ -97,7 +98,7 @@ fun ConverterScreen(vm: ConverterViewModel) {
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         vm.load(uris)
     }
-    val pickFiles = { pick.launch(arrayOf("image/*", "audio/*", "video/*", "application/pdf")) }
+    val pickFiles = { pick.launch(PICK_TYPES) }
 
     Scaffold(
         modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
@@ -156,6 +157,14 @@ fun ConverterScreen(vm: ConverterViewModel) {
     if (showAbout) AboutDialog(onDismiss = { showAbout = false })
 }
 
+/** File types shown in the file picker. */
+private val PICK_TYPES = arrayOf(
+    "image/*", "audio/*", "video/*", "application/pdf", "text/*",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.oasis.opendocument.text",
+    "application/rtf", "application/xhtml+xml",
+)
+
 private enum class Screen { Start, Loading, Settings, Working, Done, Failed }
 
 private fun screenOf(s: UiState): Screen = when (s.status) {
@@ -194,7 +203,7 @@ private fun ColumnScope.StartScreen(onPick: () -> Unit) {
         modifier = Modifier.fillMaxWidth(),
     )
     Text(
-        "Images, audio, video and PDF. All work stays on your phone. No upload.",
+        "Images, audio, video, documents and PDF. All work stays on your phone. No upload.",
         style = MaterialTheme.typography.bodyLarge,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         textAlign = TextAlign.Center,
@@ -221,6 +230,7 @@ private fun ColumnScope.StartScreen(onPick: () -> Unit) {
     FormatGroup(Icons.Outlined.Image, "Images", "JPG, PNG, WebP, GIF, BMP, TIFF, ICO, to PDF")
     FormatGroup(Icons.Outlined.AudioFile, "Audio", "MP3, M4A, OGG, OPUS, FLAC, WAV")
     FormatGroup(Icons.Outlined.Movie, "Video", "MP4, MKV, WebM, MOV, AVI, GIF, or audio only")
+    FormatGroup(Icons.Outlined.Description, "Documents", "DOCX, ODT, RTF, HTML, Markdown, TXT to PDF, DOCX, ODT, HTML, MD, TXT")
     FormatGroup(Icons.Outlined.PictureAsPdf, "PDF", "PDF pages to PNG or JPG")
 }
 
@@ -248,6 +258,7 @@ private fun iconFor(kind: FileKind): ImageVector = when (kind) {
     FileKind.AUDIO -> Icons.Outlined.AudioFile
     FileKind.VIDEO -> Icons.Outlined.Movie
     FileKind.PDF -> Icons.Outlined.PictureAsPdf
+    FileKind.DOCUMENT -> Icons.Outlined.Description
     FileKind.UNKNOWN -> Icons.AutoMirrored.Outlined.InsertDriveFile
 }
 
@@ -265,8 +276,10 @@ private fun SettingsScreen(state: UiState, vm: ConverterViewModel, onChange: () 
 
     val target = state.target
     if (target != null) {
-        val showQuality = target in LOSSY
-        val showSize = target !in AUDIO_ONLY
+        // Documents have no quality or size settings.
+        val isDoc = state.kind == FileKind.DOCUMENT
+        val showQuality = target in LOSSY && !isDoc
+        val showSize = target !in AUDIO_ONLY && !isDoc
         if (showQuality || showSize) {
             ElevatedCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -539,6 +552,7 @@ private fun AboutDialog(onDismiss: () -> Unit) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("All conversions run on your phone. The app does not use the internet.")
                 Text("Engine: Rust, with FFmpeg (LGPL), LAME, Opus and libvpx.")
+                Text("Documents keep text, headings, bold, italic, lists, links and tables. Pictures in documents are not kept.")
                 Text(version, style = MaterialTheme.typography.bodySmall)
             }
         },

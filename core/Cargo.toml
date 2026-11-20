@@ -28,6 +28,12 @@ thiserror = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff", "ico"] }
 ffmpeg-next = { version = "7.1", default-features = false, features = ["codec", "format", "filter", "software-resampling", "software-scaling"] }
 ffmpeg-sys-next = { version = "7.1", default-features = false }
+pulldown-cmark = { version = "0.12", default-features = false }
+quick-xml = "0.37"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+printpdf = { version = "0.7", default-features = false, features = ["font_subsetting"] }
+tl = "0.7"
+ttf-parser = "0.19"
 
 [profile.release]
 opt-level = "z"

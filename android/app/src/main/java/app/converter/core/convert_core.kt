@@ -1300,6 +1300,7 @@ enum class FileKind {
     AUDIO,
     VIDEO,
     PDF,
+    DOCUMENT,
     UNKNOWN;
     companion object
 }
