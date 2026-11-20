@@ -1,7 +1,10 @@
 package app.converter.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Build
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -11,6 +14,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,35 +33,39 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.FileOpen
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Image
-import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Movie
+import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.SwapHoriz
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -70,6 +78,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
@@ -82,7 +92,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -98,13 +110,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.converter.AUDIO_ONLY
+import app.converter.BuildConfig
 import app.converter.ConverterViewModel
+import app.converter.FailedFile
 import app.converter.Files
 import app.converter.InputFile
 import app.converter.LOSSY
 import app.converter.Outputs
+import app.converter.Preset
+import app.converter.RecentItem
 import app.converter.Status
 import app.converter.UiState
 import app.converter.core.FileKind
@@ -113,26 +130,67 @@ import java.io.File
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
+private enum class Tab(val label: String, val icon: ImageVector) {
+    Convert("Convert", Icons.Outlined.SwapHoriz),
+    History("History", Icons.Outlined.History),
+    Settings("Settings", Icons.Outlined.Settings),
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConverterScreen(vm: ConverterViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
-    var showAbout by remember { mutableStateOf(false) }
+    val presets by vm.presets.collectAsStateWithLifecycle()
+    val recent by vm.recent.collectAsStateWithLifecycle()
+    var tab by rememberSaveable { mutableStateOf(Tab.Convert) }
+    val ctx = LocalContext.current
     val scroll = TopAppBarDefaults.pinnedScrollBehavior()
 
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         vm.load(uris)
     }
+    val pickMore = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        vm.load(uris, append = true)
+    }
     val pickFiles = { pick.launch(PICK_TYPES) }
     val pickOfType = { types: Array<String> -> pick.launch(types) }
+    val usePreset = { p: Preset -> vm.usePreset(p); pick.launch(typesFor(p.kind)) }
+
+    // Android 13+: ask one time for the progress notification. Convert in all cases.
+    var askedNotify by rememberSaveable { mutableStateOf(false) }
+    val notifyPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        vm.convert()
+    }
+    val convert = {
+        val need = Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        if (need && !askedNotify) {
+            askedNotify = true
+            notifyPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            vm.convert()
+        }
+    }
 
     val screen = screenOf(state)
+    val home = screen == Screen.Start
+
+    // A file opened from another app goes straight to the format screen.
+    LaunchedEffect(screen) { if (!home) tab = Tab.Convert }
+    BackHandler(enabled = screen == Screen.Settings || screen == Screen.Done || screen == Screen.Failed) { vm.reset() }
+    BackHandler(enabled = home && tab != Tab.Convert) { tab = Tab.Convert }
 
     Scaffold(
         modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
         topBar = {
             TopAppBar(
-                title = { Text(titleOf(screen, state), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                title = {
+                    Text(
+                        if (home) tab.label else titleOf(screen, state),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
                 navigationIcon = {
                     when (screen) {
                         Screen.Settings -> IconButton(onClick = vm::reset) {
@@ -144,16 +202,23 @@ fun ConverterScreen(vm: ConverterViewModel) {
                         else -> {}
                     }
                 },
-                actions = {
-                    IconButton(onClick = { showAbout = true }) { Icon(Icons.Outlined.Info, "About") }
-                },
                 scrollBehavior = scroll,
             )
         },
         bottomBar = {
-            // The main action stays at the bottom, so it is always easy to reach.
-            if (screen == Screen.Settings && state.target != null) {
-                ConvertBar(state, onConvert = vm::convert)
+            when {
+                home -> NavigationBar {
+                    Tab.entries.forEach { t ->
+                        NavigationBarItem(
+                            selected = tab == t,
+                            onClick = { tab = t },
+                            icon = { Icon(t.icon, null) },
+                            label = { Text(t.label) },
+                        )
+                    }
+                }
+                // The main action stays at the bottom, so it is always easy to reach.
+                screen == Screen.Settings && state.target != null -> ConvertBar(state, onConvert = convert)
             }
         },
     ) { padding ->
@@ -162,7 +227,8 @@ fun ConverterScreen(vm: ConverterViewModel) {
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            AnimatedContent(targetState = screen, label = "screen") { s ->
+            val key = if (home) "tab-${tab.name}" else screen.name
+            AnimatedContent(targetState = key, label = "screen") { k ->
                 Column(
                     Modifier
                         .fillMaxSize()
@@ -170,20 +236,40 @@ fun ConverterScreen(vm: ConverterViewModel) {
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(20.dp),
                 ) {
-                    when (s) {
-                        Screen.Start -> StartScreen(onPick = pickFiles, onPickType = pickOfType)
-                        Screen.Loading -> Box(Modifier.fillMaxWidth().padding(48.dp), Alignment.Center) {
+                    when (k) {
+                        "tab-Convert" -> StartScreen(
+                            presets = presets,
+                            recent = recent,
+                            onPick = pickFiles,
+                            onPickType = pickOfType,
+                            onPreset = usePreset,
+                            onSeeAll = { tab = Tab.History },
+                            onEditPresets = { tab = Tab.Settings },
+                        )
+                        "tab-History" -> HistoryScreen(recent, vm::deleteRecent, vm::clearRecent)
+                        "tab-Settings" -> SettingsTab(presets, vm::deletePreset)
+                        Screen.Loading.name -> Box(Modifier.fillMaxWidth().padding(48.dp), Alignment.Center) {
                             CircularProgressIndicator()
                         }
-                        Screen.Settings -> SettingsScreen(state, vm, onChange = pickFiles)
-                        Screen.Working -> WorkingScreen(state, onCancel = vm::cancel)
-                        Screen.Done -> DoneScreen(
-                            state.inputs,
-                            (state.status as? Status.Done)?.outputs.orEmpty(),
-                            onAgain = vm::backToSettings,
-                            onNew = { vm.reset(); pickFiles() },
-                        )
-                        Screen.Failed -> FailedScreen(
+                        Screen.Settings.name -> SettingsScreen(state, vm, onAdd = { pickMore.launch(PICK_TYPES) })
+                        Screen.Working.name -> WorkingScreen(state, onCancel = vm::cancel)
+                        Screen.Done.name -> {
+                            val done = state.status as? Status.Done
+                            DoneScreen(
+                                state = state,
+                                outputs = done?.outputs.orEmpty(),
+                                failures = done?.failures.orEmpty(),
+                                onAgain = vm::backToSettings,
+                                onNew = { vm.reset(); pickFiles() },
+                                onRetryAs = vm::retryFailed,
+                                onSavePreset = {
+                                    val name = vm.saveCurrentAsPreset()
+                                    if (name != null) Toast.makeText(ctx, "Preset saved: $name", Toast.LENGTH_SHORT).show()
+                                },
+                                presetExists = presets.any { it.kind == state.kind && it.target == state.target },
+                            )
+                        }
+                        Screen.Failed.name -> FailedScreen(
                             (state.status as? Status.Failed)?.message.orEmpty(),
                             canRetry = state.inputs.isNotEmpty(),
                             onRetry = vm::backToSettings,
@@ -195,8 +281,6 @@ fun ConverterScreen(vm: ConverterViewModel) {
             }
         }
     }
-
-    if (showAbout) AboutDialog(onDismiss = { showAbout = false })
 }
 
 /** File types shown in the file picker. */
@@ -207,6 +291,15 @@ private val DOC_TYPES = arrayOf(
     "application/rtf", "application/xhtml+xml",
 )
 private val PICK_TYPES = arrayOf("image/*", "audio/*", "video/*", "application/pdf") + DOC_TYPES
+
+private fun typesFor(kind: FileKind): Array<String> = when (kind) {
+    FileKind.IMAGE -> arrayOf("image/*")
+    FileKind.AUDIO -> arrayOf("audio/*")
+    FileKind.VIDEO -> arrayOf("video/*")
+    FileKind.PDF -> arrayOf("application/pdf")
+    FileKind.DOCUMENT -> DOC_TYPES
+    FileKind.UNKNOWN -> PICK_TYPES
+}
 
 private enum class Screen { Start, Loading, Settings, Working, Done, Failed }
 
@@ -222,7 +315,10 @@ private fun titleOf(screen: Screen, s: UiState): String = when (screen) {
     Screen.Start, Screen.Loading -> "Convert"
     Screen.Settings -> if (s.inputs.size == 1) "Convert 1 file" else "Convert ${s.inputs.size} files"
     Screen.Working -> "Converting"
-    Screen.Done -> ""
+    Screen.Done -> {
+        val d = s.status as? Status.Done
+        if (d != null && d.failures.isNotEmpty()) "${d.outputs.size} of ${d.outputs.size + d.failures.size} converted" else ""
+    }
     Screen.Failed -> "Not converted"
 }
 
@@ -248,6 +344,14 @@ private fun SectionTitle(text: String) {
     )
 }
 
+@Composable
+private fun SectionHeader(text: String, action: String?, onAction: () -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(1f)) { SectionTitle(text) }
+        if (action != null) TextButton(onClick = onAction) { Text(action) }
+    }
+}
+
 // ------------------------------------------------------------------ start
 
 private data class TypeTile(val icon: ImageVector, val label: String, val types: Array<String>)
@@ -261,7 +365,15 @@ private val TILES = listOf(
 )
 
 @Composable
-private fun StartScreen(onPick: () -> Unit, onPickType: (Array<String>) -> Unit) {
+private fun StartScreen(
+    presets: List<Preset>,
+    recent: List<RecentItem>,
+    onPick: () -> Unit,
+    onPickType: (Array<String>) -> Unit,
+    onPreset: (Preset) -> Unit,
+    onSeeAll: () -> Unit,
+    onEditPresets: () -> Unit,
+) {
     Card(
         shape = RoundedCornerShape(28.dp),
         colors = CardDefaults.cardColors(
@@ -300,6 +412,10 @@ private fun StartScreen(onPick: () -> Unit, onPickType: (Array<String>) -> Unit)
                 Spacer(Modifier.width(8.dp))
                 Text("Choose files", style = MaterialTheme.typography.titleMedium)
             }
+            Text(
+                "Tip: in other apps, use \"Open with\" or \"Share\" and choose Convert.",
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 
@@ -328,21 +444,149 @@ private fun StartScreen(onPick: () -> Unit, onPickType: (Array<String>) -> Unit)
         }
     }
 
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SectionTitle("What you can convert")
-        FormatLine("Images", "JPG, PNG, WebP, GIF, BMP, TIFF, ICO. Many images into one PDF.")
-        FormatLine("Video", "MP4, MKV, WebM, MOV, AVI, GIF, or sound only.")
-        FormatLine("Audio", "MP3, M4A, OGG, OPUS, FLAC, WAV.")
-        FormatLine("Documents", "DOCX, ODT, RTF, HTML, Markdown, TXT, to PDF and more.")
-        FormatLine("PDF", "Pages to PNG or JPG.")
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        SectionHeader("My presets", "Edit", onEditPresets)
+        if (presets.isEmpty()) {
+            Hint("No presets. After a conversion, tap \"Save as a preset\".")
+        } else {
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                presets.forEach { p ->
+                    AssistChip(onClick = { onPreset(p) }, label = { Text(p.name) })
+                }
+            }
+        }
+    }
+
+    Column {
+        SectionHeader("Recent", if (recent.size > 3) "See all" else null, onSeeAll)
+        if (recent.isEmpty()) {
+            Hint("Your converted files show here.")
+        } else {
+            recent.take(3).forEach { RecentRow(it, onDelete = null) }
+        }
+    }
+}
+
+// ------------------------------------------------------------------ history and settings tabs
+
+@Composable
+private fun RecentRow(item: RecentItem, onDelete: ((RecentItem) -> Unit)?) {
+    val ctx = LocalContext.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 64.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            modifier = Modifier.size(44.dp),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    item.toExt.uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                )
+            }
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(item.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                "${item.fromExt.uppercase()} to ${item.toExt.uppercase()} · " +
+                    if (item.inBytes > 0) "${Files.humanSize(item.inBytes)} to ${Files.humanSize(item.outBytes)}"
+                    else Files.humanSize(item.outBytes),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        IconButton(onClick = {
+            runCatching { Outputs.open(ctx, item.file) }
+                .onFailure { Toast.makeText(ctx, "No app can open this file", Toast.LENGTH_SHORT).show() }
+        }) { Icon(Icons.Outlined.OpenInNew, "Open ${item.name}") }
+        IconButton(onClick = { runCatching { Outputs.share(ctx, listOf(item.file)) } }) {
+            Icon(Icons.Outlined.Share, "Share ${item.name}")
+        }
+        if (onDelete != null) {
+            IconButton(onClick = { onDelete(item) }) { Icon(Icons.Outlined.Delete, "Delete ${item.name}") }
+        }
     }
 }
 
 @Composable
-private fun FormatLine(title: String, text: String) {
-    Row {
-        Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, modifier = Modifier.width(96.dp))
-        Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+private fun HistoryScreen(recent: List<RecentItem>, onDelete: (RecentItem) -> Unit, onClear: () -> Unit) {
+    if (recent.isEmpty()) {
+        EmptyState(Icons.Outlined.History, "No converted files yet", "Files that you convert show here, so you can open or share them again.")
+        return
+    }
+    Column {
+        val total = recent.sumOf { it.outBytes }
+        SectionHeader("${recent.size} files · ${Files.humanSize(total)}", "Delete all", onClear)
+        recent.forEach { RecentRow(it, onDelete) }
+        Hint("The app keeps the last 30 files. Save a file to keep it longer.")
+    }
+}
+
+@Composable
+private fun EmptyState(icon: ImageVector, title: String, text: String) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 48.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(48.dp))
+        Text(title, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
+        Text(
+            text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+@Composable
+private fun SettingsTab(presets: List<Preset>, onDeletePreset: (Long) -> Unit) {
+    val version = remember { runCatching { coreVersion() }.getOrElse { "engine not loaded: ${it.message}" } }
+    Column {
+        SectionTitle("My presets")
+        if (presets.isEmpty()) Hint("No presets.")
+        presets.forEach { p ->
+            Row(Modifier.heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(p.name, style = MaterialTheme.typography.bodyLarge)
+                    Hint(
+                        listOfNotNull(
+                            p.target.uppercase(),
+                            if (p.target in LOSSY && p.kind != FileKind.DOCUMENT) "quality ${p.quality}%" else null,
+                            if (p.maxDimension > 0) "largest side ${p.maxDimension}" else null,
+                        ).joinToString(" · "),
+                    )
+                }
+                IconButton(onClick = { onDeletePreset(p.id) }) { Icon(Icons.Outlined.Delete, "Delete preset ${p.name}") }
+            }
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SectionTitle("About")
+        Text("All conversions run on your phone. The app does not use the internet.", style = MaterialTheme.typography.bodyMedium)
+        Text("Engine: Rust, with FFmpeg (LGPL), LAME, Opus and libvpx.", style = MaterialTheme.typography.bodyMedium)
+        Text(
+            "Documents keep text, headings, bold, italic, lists, links and tables. Pictures in documents are not kept.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Hint("App ${BuildConfig.VERSION_NAME} · $version")
     }
 }
 
@@ -364,14 +608,14 @@ private val QUALITY_LEVELS = listOf(60 to "Small file", 85 to "Balanced", 95 to 
 private const val SUGGESTED = 4
 
 @Composable
-private fun SettingsScreen(state: UiState, vm: ConverterViewModel, onChange: () -> Unit) {
+private fun SettingsScreen(state: UiState, vm: ConverterViewModel, onAdd: () -> Unit) {
     var showAll by rememberSaveable { mutableStateOf(false) }
     var showMore by rememberSaveable { mutableStateOf(false) }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         val total = state.inputs.sumOf { it.size.coerceAtLeast(0) }
         SectionTitle("${kindName(state.kind, state.inputs.size)} · ${Files.humanSize(total)}")
-        FileStrip(state.inputs, state.kind, onChange)
+        FileStrip(state.inputs, state.kind, onAdd, vm::removeInput)
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -463,9 +707,9 @@ private fun Hint(text: String) {
 }
 
 @Composable
-private fun FileStrip(inputs: List<InputFile>, kind: FileKind, onChange: () -> Unit) {
+private fun FileStrip(inputs: List<InputFile>, kind: FileKind, onAdd: () -> Unit, onRemove: (Int) -> Unit) {
     LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        items(inputs) { f ->
+        itemsIndexed(inputs) { i, f ->
             Column(Modifier.width(104.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
@@ -475,14 +719,21 @@ private fun FileStrip(inputs: List<InputFile>, kind: FileKind, onChange: () -> U
                         .fillMaxWidth()
                         .height(84.dp),
                 ) {
-                    Box(Modifier.padding(8.dp)) {
+                    Box {
                         Icon(iconFor(kind), null, modifier = Modifier.align(Alignment.Center).size(28.dp))
                         Text(
                             f.extension.uppercase(),
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.align(Alignment.BottomStart),
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(8.dp),
                         )
+                        if (inputs.size > 1) {
+                            IconButton(onClick = { onRemove(i) }, modifier = Modifier.align(Alignment.TopEnd)) {
+                                Icon(Icons.Outlined.Close, "Remove ${f.name}", Modifier.size(18.dp))
+                            }
+                        }
                     }
                 }
                 Text(f.name, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -495,7 +746,7 @@ private fun FileStrip(inputs: List<InputFile>, kind: FileKind, onChange: () -> U
         }
         item {
             OutlinedButton(
-                onClick = onChange,
+                onClick = onAdd,
                 shape = RoundedCornerShape(12.dp),
                 contentPadding = PaddingValues(4.dp),
                 modifier = Modifier
@@ -503,8 +754,8 @@ private fun FileStrip(inputs: List<InputFile>, kind: FileKind, onChange: () -> U
                     .height(84.dp),
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Outlined.Edit, null)
-                    Text("Change", style = MaterialTheme.typography.labelMedium)
+                    Icon(Icons.Outlined.Add, null)
+                    Text("Add files", style = MaterialTheme.typography.labelMedium)
                 }
             }
         }
@@ -618,6 +869,7 @@ private fun ConvertBar(state: UiState, onConvert: () -> Unit) {
     }
 }
 
+
 // ------------------------------------------------------------------ working
 
 @Composable
@@ -629,6 +881,11 @@ private fun ColumnScope.WorkingScreen(state: UiState, onCancel: () -> Unit) {
     val perFile = n > 1 && !oneStep
     val done = if (perFile) (w.progress * n).toInt().coerceIn(0, n) else 0
     val percent = (w.progress * 100).roundToInt().coerceIn(0, 100)
+
+    // Time left: from the time used so far and the progress.
+    val started = remember { mutableLongStateOf(System.currentTimeMillis()) }
+    val elapsed = System.currentTimeMillis() - started.longValue
+    val left = if (w.progress > 0.05f && elapsed > 2000) ((elapsed / w.progress) - elapsed).toLong() else -1L
 
     Spacer(Modifier.height(8.dp))
     Box(
@@ -646,14 +903,14 @@ private fun ColumnScope.WorkingScreen(state: UiState, onCancel: () -> Unit) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text("$percent%", style = MaterialTheme.typography.displaySmall)
             Text(
-                "to ${state.target?.uppercase()}",
+                if (left >= 0) "about ${timeText(left)} left" else "to ${state.target?.uppercase()}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
     Text(
-        if (perFile) "$done of $n files done" else "Converting ${kindName(state.kind, n)}",
+        if (perFile) "$done of $n files done" else "Converting ${kindName(state.kind, n)} to ${state.target?.uppercase()}",
         style = MaterialTheme.typography.titleMedium,
         textAlign = TextAlign.Center,
         modifier = Modifier.fillMaxWidth(),
@@ -677,9 +934,12 @@ private fun ColumnScope.WorkingScreen(state: UiState, onCancel: () -> Unit) {
 
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Outlined.Info, null, tint = MaterialTheme.colorScheme.primary)
+            Icon(Icons.Outlined.Notifications, null, tint = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.width(12.dp))
-            Text("Keep the app open until the work is done.", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "You can leave the app. Progress shows in a notification, and we tell you when it is done.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
         }
     }
 
@@ -689,6 +949,15 @@ private fun ColumnScope.WorkingScreen(state: UiState, onCancel: () -> Unit) {
             .fillMaxWidth()
             .height(56.dp),
     ) { Text("Stop", style = MaterialTheme.typography.titleMedium) }
+}
+
+private fun timeText(ms: Long): String {
+    val s = (ms / 1000).coerceAtLeast(1)
+    return when {
+        s < 60 -> "$s s"
+        s < 3600 -> "${(s + 30) / 60} min"
+        else -> "${s / 3600} h ${(s % 3600) / 60} min"
+    }
 }
 
 private enum class RowState { Done, Working, Waiting }
@@ -727,7 +996,16 @@ private fun FileProgressRow(name: String, state: RowState, progress: Float) {
 // ------------------------------------------------------------------ done
 
 @Composable
-private fun ColumnScope.DoneScreen(inputs: List<InputFile>, outputs: List<File>, onAgain: () -> Unit, onNew: () -> Unit) {
+private fun ColumnScope.DoneScreen(
+    state: UiState,
+    outputs: List<File>,
+    failures: List<FailedFile>,
+    onAgain: () -> Unit,
+    onNew: () -> Unit,
+    onRetryAs: (String) -> Unit,
+    onSavePreset: () -> Unit,
+    presetExists: Boolean,
+) {
     val ctx = LocalContext.current
     fun toast(msg: String) = Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
 
@@ -740,105 +1018,189 @@ private fun ColumnScope.DoneScreen(inputs: List<InputFile>, outputs: List<File>,
             .onSuccess { toast("Saved ${outputs.size} files") }.onFailure { toast("Not saved: ${it.message}") }
     }
 
-    val before = inputs.sumOf { it.size.coerceAtLeast(0) }
+    val failedNames = failures.map { it.input.name }.toSet()
+    val before = state.inputs.filter { it.name !in failedNames }.sumOf { it.size.coerceAtLeast(0) }
     val after = remember(outputs) { outputs.sumOf { it.length() } }
 
-    Spacer(Modifier.height(8.dp))
-    Surface(
-        shape = RoundedCornerShape(28.dp),
-        color = MaterialTheme.colorScheme.primaryContainer,
-        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-        modifier = Modifier
-            .align(Alignment.CenterHorizontally)
-            .size(80.dp),
-    ) {
-        Box(contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Check, null, Modifier.size(40.dp)) }
-    }
-    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(
-            if (outputs.size == 1) "File converted" else "${outputs.size} files converted",
-            style = MaterialTheme.typography.headlineSmall,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.semantics { heading() },
-        )
-        if (before > 0 && after > 0) {
-            Text(
-                "${Files.humanSize(before)} to ${Files.humanSize(after)}. ${sizeChange(before, after)}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
-        }
+    if (failures.isNotEmpty()) {
+        FailuresCard(state, failures, onRetryAs, onAgain)
     }
 
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
-        Column(Modifier.padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)) {
-            outputs.take(8).forEach { f ->
-                Row(Modifier.heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(f.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(
-                            Files.humanSize(f.length()),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    IconButton(onClick = {
-                        runCatching { Outputs.open(ctx, f) }.onFailure { toast("No app can open this file") }
-                    }) { Icon(Icons.Outlined.OpenInNew, "Open ${f.name}") }
+    if (outputs.isNotEmpty()) {
+        if (failures.isEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Surface(
+                shape = RoundedCornerShape(28.dp),
+                color = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .size(80.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Check, null, Modifier.size(40.dp)) }
+            }
+            Column(
+                Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    if (outputs.size == 1) "File converted" else "${outputs.size} files converted",
+                    style = MaterialTheme.typography.headlineSmall,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.semantics { heading() },
+                )
+                if (before > 0 && after > 0) {
+                    Text(
+                        "${Files.humanSize(before)} to ${Files.humanSize(after)}. ${sizeChange(before, after)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
                 }
             }
-            if (outputs.size > 8) {
+        }
+
+        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+            Column(Modifier.padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)) {
+                outputs.take(8).forEach { f ->
+                    Row(Modifier.heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Outlined.CheckCircle, "Done", tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(f.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                Files.humanSize(f.length()),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        IconButton(onClick = {
+                            runCatching { Outputs.open(ctx, f) }.onFailure { toast("No app can open this file") }
+                        }) { Icon(Icons.Outlined.OpenInNew, "Open ${f.name}") }
+                    }
+                }
+                if (outputs.size > 8) {
+                    Text(
+                        "and ${outputs.size - 8} more",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 8.dp),
+                    )
+                }
+            }
+        }
+
+        if (!presetExists && state.target != null) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+                Row(
+                    Modifier.padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Save as a preset?", style = MaterialTheme.typography.titleSmall)
+                        Hint("Use these settings again with one tap.")
+                    }
+                    TextButton(onClick = onSavePreset) { Text("Save") }
+                }
+            }
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = {
+                    val saved = runCatching { Outputs.saveToDownloads(ctx, outputs) }
+                    when {
+                        saved.isFailure -> toast("Not saved: ${saved.exceptionOrNull()?.message}")
+                        saved.getOrDefault(false) -> toast("Saved to Downloads/Converter")
+                        outputs.size == 1 -> saveOne.launch(outputs.first().name)
+                        else -> saveMany.launch(null)
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+            ) {
+                Icon(Icons.Outlined.Download, null)
+                Spacer(Modifier.width(8.dp))
                 Text(
-                    "and ${outputs.size - 8} more",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 8.dp),
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) "Save to Downloads" else "Save",
+                    style = MaterialTheme.typography.titleMedium,
                 )
             }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                FilledTonalButton(
+                    onClick = { Outputs.share(ctx, outputs) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp),
+                ) {
+                    Icon(Icons.Outlined.Share, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (outputs.size == 1) "Share" else "Share all")
+                }
+                FilledTonalButton(
+                    onClick = { if (outputs.size == 1) saveOne.launch(outputs.first().name) else saveMany.launch(null) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp),
+                ) { Text("Save as…") }
+            }
         }
     }
 
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(
-            onClick = {
-                val saved = runCatching { Outputs.saveToDownloads(ctx, outputs) }
-                when {
-                    saved.isFailure -> toast("Not saved: ${saved.exceptionOrNull()?.message}")
-                    saved.getOrDefault(false) -> toast("Saved to Downloads/Converter")
-                    outputs.size == 1 -> saveOne.launch(outputs.first().name)
-                    else -> saveMany.launch(null)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        TextButton(onClick = onAgain, modifier = Modifier.weight(1f)) { Text("Other format") }
+        TextButton(onClick = onNew, modifier = Modifier.weight(1f)) { Text("Convert more files") }
+    }
+}
+
+/** Some files did not convert: say why, and give a fix. */
+@Composable
+private fun FailuresCard(state: UiState, failures: List<FailedFile>, onRetryAs: (String) -> Unit, onAgain: () -> Unit) {
+    // For a video that fails, the sound often still converts.
+    val soundOnly = if (state.kind == FileKind.VIDEO && "mp3" in state.targets && state.target != "mp3") "mp3" else null
+    Card(
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        ),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(Modifier.padding(16.dp)) {
+            Icon(Icons.Outlined.ErrorOutline, null, tint = MaterialTheme.colorScheme.error)
+            Spacer(Modifier.width(12.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    if (failures.size == 1) "${failures.first().input.name} did not convert"
+                    else "${failures.size} files did not convert",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.semantics { heading() },
+                )
+                failures.take(5).forEach {
+                    Text(
+                        if (failures.size == 1) it.message else "${it.input.name}: ${it.message}",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
                 }
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp),
-        ) {
-            Icon(Icons.Outlined.Download, null)
-            Spacer(Modifier.width(8.dp))
-            Text(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) "Save to Downloads" else "Save", style = MaterialTheme.typography.titleMedium)
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            FilledTonalButton(
-                onClick = { Outputs.share(ctx, outputs) },
-                modifier = Modifier
-                    .weight(1f)
-                    .height(48.dp),
-            ) {
-                Icon(Icons.Outlined.Share, null)
-                Spacer(Modifier.width(8.dp))
-                Text(if (outputs.size == 1) "Share" else "Share all")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (soundOnly != null) {
+                        Button(
+                            onClick = { onRetryAs(soundOnly) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError,
+                            ),
+                        ) { Text("Get sound only (MP3)") }
+                    } else {
+                        TextButton(onClick = onAgain) { Text("Try other settings") }
+                    }
+                }
             }
-            FilledTonalButton(
-                onClick = { if (outputs.size == 1) saveOne.launch(outputs.first().name) else saveMany.launch(null) },
-                modifier = Modifier
-                    .weight(1f)
-                    .height(48.dp),
-            ) { Text("Save as…") }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            TextButton(onClick = onAgain, modifier = Modifier.weight(1f)) { Text("Other format") }
-            TextButton(onClick = onNew, modifier = Modifier.weight(1f)) { Text("Convert more files") }
         }
     }
 }
@@ -894,25 +1256,4 @@ private fun FailedScreen(message: String, canRetry: Boolean, onRetry: () -> Unit
                 .height(48.dp),
         ) { Text("Choose other files") }
     }
-}
-
-// ------------------------------------------------------------------ about
-
-@Composable
-private fun AboutDialog(onDismiss: () -> Unit) {
-    val version = remember { runCatching { coreVersion() }.getOrElse { "engine not loaded: ${it.message}" } }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = onDismiss) { Text("OK") } },
-        icon = { Icon(Icons.Outlined.Info, null) },
-        title = { Text("About Converter") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("All conversions run on your phone. The app does not use the internet.")
-                Text("Engine: Rust, with FFmpeg (LGPL), LAME, Opus and libvpx.")
-                Text("Documents keep text, headings, bold, italic, lists, links and tables. Pictures in documents are not kept.")
-                Text(version, style = MaterialTheme.typography.bodySmall)
-            }
-        },
-    )
 }
