@@ -1,0 +1,91 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ABI: arm64-v8a
+  CARGO_TERM_COLOR: always
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Use the NDK on the runner
+        run: |
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+          echo "NDK: $ANDROID_NDK_LATEST_HOME"
+
+      - name: Install host tools and FFmpeg headers (for tests and bindings)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends nasm pkg-config clang ffmpeg \
+            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
+            libswscale-dev libswresample-dev libavdevice-dev
+
+      # FFmpeg takes about 15 minutes to build, so keep it in the cache.
+      - name: Cache FFmpeg for Android
+        id: ffcache
+        uses: actions/cache@v4
+        with:
+          path: build/ffmpeg/${{ env.ABI }}
+          key: ffmpeg-${{ env.ABI }}-${{ hashFiles('scripts/build-ffmpeg-android.sh') }}
+
+      - name: Build FFmpeg for Android
+        if: steps.ffcache.outputs.cache-hit != 'true'
+        run: scripts/build-ffmpeg-android.sh "$ABI" "build/ffmpeg/$ABI"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+
+      - name: Test the Rust core (on the runner)
+        working-directory: core
+        run: cargo test
+
+      - name: Make the Kotlin bindings
+        working-directory: core
+        run: |
+          cargo build --lib
+          cargo run --features bindgen --bin uniffi-bindgen -- generate \
+            --library target/debug/libconvert_core.so --language kotlin \
+            --out-dir ../android/app/src/main/java --no-format
+          git diff --stat -- ../android/app/src/main/java/app/converter/core || true
+
+      - name: Build the Rust core for Android
+        run: scripts/build-core-android.sh build/ffmpeg "$ABI"
+
+      - name: Build the APK
+        working-directory: android
+        run: ./gradlew --no-daemon assembleDebug assembleRelease
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: converter-apk
+          path: |
+            android/app/build/outputs/apk/debug/*.apk
+            android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
