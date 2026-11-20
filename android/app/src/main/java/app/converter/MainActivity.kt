@@ -30,11 +30,12 @@ class MainActivity : ComponentActivity() {
         handleShare(intent)
     }
 
-    /** Files shared to this app from another app. */
+    /** Files opened with ("Open with") or shared to this app from another app. */
     private fun handleShare(intent: Intent?) {
         intent ?: return
         val uris: List<Uri> = when (intent.action) {
-            Intent.ACTION_SEND -> listOfNotNull(streamExtra(intent))
+            Intent.ACTION_VIEW -> listOfNotNull(intent.data)
+            Intent.ACTION_SEND -> listOfNotNull(streamExtra(intent) ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri)
             Intent.ACTION_SEND_MULTIPLE -> streamListExtra(intent)
             else -> emptyList()
         }

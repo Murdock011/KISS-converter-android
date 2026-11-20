@@ -17,12 +17,14 @@ data class InputFile(
 
 object Files {
     fun inputDir(ctx: Context) = File(ctx.cacheDir, "input").apply { mkdirs() }
-    fun outputDir(ctx: Context) = File(ctx.cacheDir, "output").apply { mkdirs() }
 
-    /** Delete old work files from the last run. */
+    /** Converted files stay here, so the recent list can open and share them later. */
+    fun outputDir(ctx: Context) = File(ctx.filesDir, "converted").apply { mkdirs() }
+
+    /** Delete the copies of the input files from the last run. */
     fun clean(ctx: Context) {
         inputDir(ctx).deleteRecursively()
-        outputDir(ctx).deleteRecursively()
+        File(ctx.cacheDir, "output").deleteRecursively() // old versions used this folder
     }
 
     fun displayName(ctx: Context, uri: Uri): Pair<String, Long> {
@@ -50,7 +52,7 @@ object Files {
     fun copyToCache(ctx: Context, uri: Uri, index: Int = 0): InputFile {
         val (name, size) = displayName(ctx, uri)
         val ext = extensionOf(ctx, uri, name)
-        val target = File(inputDir(ctx), "in$index.$ext")
+        val target = File(inputDir(ctx), "in$index-${System.nanoTime()}.$ext")
         ctx.contentResolver.openInputStream(uri).use { input ->
             requireNotNull(input) { "Cannot open $name" }
             target.outputStream().use { input.copyTo(it) }
