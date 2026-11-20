@@ -96,6 +96,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -115,6 +116,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.converter.AUDIO_ONLY
 import app.converter.BuildConfig
 import app.converter.ConverterViewModel
+import app.converter.Estimate
 import app.converter.FailedFile
 import app.converter.Files
 import app.converter.InputFile
@@ -127,6 +129,8 @@ import app.converter.UiState
 import app.converter.core.FileKind
 import app.converter.core.coreVersion
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -175,6 +179,16 @@ fun ConverterScreen(vm: ConverterViewModel) {
     val screen = screenOf(state)
     val home = screen == Screen.Start
 
+    // Pixel size and play time of the chosen files, for the size estimate.
+    val infos by produceState<List<Estimate.Info?>>(emptyList(), state.inputs, state.kind) {
+        val inputs = state.inputs
+        val kind = state.kind
+        value = withContext(Dispatchers.IO) { inputs.map { Estimate.probe(it, kind) } }
+    }
+    val estimate = state.target?.let {
+        Estimate.total(state.inputs, infos, state.kind, it, state.quality, state.maxDimension)
+    }
+
     // A file opened from another app goes straight to the format screen.
     LaunchedEffect(screen) { if (!home) tab = Tab.Convert }
     BackHandler(enabled = screen == Screen.Settings || screen == Screen.Done || screen == Screen.Failed) { vm.reset() }
@@ -218,7 +232,7 @@ fun ConverterScreen(vm: ConverterViewModel) {
                     }
                 }
                 // The main action stays at the bottom, so it is always easy to reach.
-                screen == Screen.Settings && state.target != null -> ConvertBar(state, onConvert = convert)
+                screen == Screen.Settings && state.target != null -> ConvertBar(state, estimate, onConvert = convert)
             }
         },
     ) { padding ->
@@ -827,8 +841,9 @@ private fun SizeSelector(value: Int, onChange: (Int) -> Unit) {
 }
 
 @Composable
-private fun ConvertBar(state: UiState, onConvert: () -> Unit) {
+private fun ConvertBar(state: UiState, estimate: Long?, onConvert: () -> Unit) {
     val target = state.target ?: return
+    val now = state.inputs.sumOf { it.size.coerceAtLeast(0) }
     Surface(color = MaterialTheme.colorScheme.surface) {
         Column {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -838,6 +853,21 @@ private fun ConvertBar(state: UiState, onConvert: () -> Unit) {
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                if (estimate != null && estimate > 0) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Size after",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            "about ${Files.humanSize(estimate)}" + if (now > 0) " (now ${Files.humanSize(now)})" else "",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+                }
                 Button(
                     onClick = onConvert,
                     modifier = Modifier
