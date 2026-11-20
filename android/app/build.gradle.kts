@@ -12,8 +12,8 @@ android {
         applicationId = "app.converter"
         minSdk = 24
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.4.0"
         ndk {
             // Add "x86_64" here when the CI builds that ABI too.
             abiFilters += listOf("arm64-v8a")
