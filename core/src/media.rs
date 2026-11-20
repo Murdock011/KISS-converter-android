@@ -18,6 +18,32 @@ struct Plan {
     video_only: bool,
 }
 
+/// Codecs that the output container can hold as they are (stream copy, no new encoding).
+fn copy_ok(ext: &str, id: codec::Id, video: bool) -> bool {
+    use codec::Id::*;
+    let ok: &[codec::Id] = match (ext, video) {
+        ("mp4" | "mov", true) => &[H264, HEVC, MPEG4, AV1],
+        ("mp4" | "mov", false) => &[AAC, MP3],
+        ("mkv", true) => &[H264, HEVC, MPEG4, AV1, VP8, VP9],
+        ("mkv", false) => &[AAC, MP3, OPUS, VORBIS, FLAC],
+        ("webm", true) => &[VP8, VP9, AV1],
+        ("webm", false) => &[OPUS, VORBIS],
+        ("avi", true) => &[MPEG4],
+        ("avi", false) => &[MP3],
+        ("mp3", false) => &[MP3],
+        ("m4a", false) => &[AAC],
+        ("ogg", false) => &[VORBIS, OPUS, FLAC],
+        ("opus", false) => &[OPUS],
+        ("flac", false) => &[FLAC],
+        _ => &[],
+    };
+    ok.contains(&id)
+}
+
+/// From this quality up, a stream that fits the new container is copied as it is.
+/// This keeps the size and the quality, and it is fast.
+const COPY_FROM_QUALITY: u8 = 80;
+
 fn plan_for(ext: &str) -> Option<Plan> {
     const H264_ETC: &[&str] = &["libx264", "libopenh264", "mpeg4"];
     let p = match ext {
@@ -110,6 +136,7 @@ fn video_pipe(
     codec: ff::Codec,
     ext: &str,
     options: &ConvertOptions,
+    source_bps: Option<u64>,
 ) -> Result<VideoPipe, ConvertError> {
     let ist = ictx.stream(ist_index).ok_or_else(|| failed("video stream missing"))?;
     let mut dec_ctx = codec::context::Context::from_parameters(ist.parameters())?;
@@ -177,7 +204,14 @@ fn video_pipe(
     }
     if ext != "gif" {
         enc.set_gop(frame_rate_gop(frame_rate));
-        enc.set_bit_rate(video_bit_rate(w, h, options.quality));
+        let fps = if frame_rate.numerator() > 0 && frame_rate.denominator() > 0 { f64::from(frame_rate) } else { 30.0 };
+        let cap = video_cap(
+            source_bps,
+            options.quality,
+            decoder.width() as f64 * decoder.height() as f64,
+            w as f64 * h as f64,
+        );
+        enc.set_bit_rate(video_bit_rate(w, h, fps, options.quality, cap));
         enc.set_max_b_frames(0);
     }
     if global {
@@ -217,10 +251,26 @@ fn frame_rate_gop(rate: Rational) -> u32 {
     (fps * 2.0).round().clamp(1.0, 600.0) as u32
 }
 
-fn video_bit_rate(w: u32, h: u32, quality: u8) -> usize {
-    // About 0.05 to 0.25 bits per pixel per frame at 30 fps.
-    let bpp = 0.05 + 0.2 * (quality.clamp(1, 100) as f64 / 100.0);
-    ((w as f64) * (h as f64) * 30.0 * bpp) as usize
+/// The bit rate for new video: from the size, the frame rate and the quality,
+/// but never more than `cap` (from the bit rate of the original file).
+pub(crate) fn video_bit_rate(w: u32, h: u32, fps: f64, quality: u8, cap: Option<u64>) -> usize {
+    let fps = if fps.is_finite() && fps > 0.0 { fps.clamp(1.0, 120.0) } else { 30.0 };
+    // About 0.03 to 0.13 bits per pixel per frame.
+    let bpp = 0.03 + 0.1 * (quality.clamp(1, 100) as f64 / 100.0);
+    let mut rate = (w as f64) * (h as f64) * fps * bpp;
+    if let Some(c) = cap {
+        rate = rate.min(c as f64);
+    }
+    rate.max(100_000.0) as usize
+}
+
+/// The most bits per second the new video may use: the original rate, times the quality
+/// (Best: 95%, Balanced: 85%, Small: 60%), and smaller again for a smaller picture.
+pub(crate) fn video_cap(source_bps: Option<u64>, quality: u8, in_px: f64, out_px: f64) -> Option<u64> {
+    let src = source_bps? as f64;
+    let q = quality.clamp(1, 100) as f64 / 100.0;
+    let scale = if in_px > 0.0 && out_px > 0.0 { (out_px / in_px).min(1.0) } else { 1.0 };
+    Some((src * q * scale) as u64)
 }
 
 impl VideoPipe {
@@ -305,13 +355,20 @@ fn pick_rate(codec: &ff::codec::Audio, want: u32) -> u32 {
     }
 }
 
-fn audio_bit_rate(name: &str, quality: u8, channels: u32) -> usize {
+/// The bit rate for new audio, but never more than the original rate (`source_bps`).
+pub(crate) fn audio_bit_rate(name: &str, quality: u8, channels: u32, source_bps: Option<u64>) -> usize {
     let q = quality.clamp(1, 100) as usize;
+    let ch = channels.clamp(1, 2) as usize;
     let per_channel = match name {
-        "libopus" | "opus" => 24_000 + q * 800,  // ~32k..104k per channel
-        _ => 32_000 + q * 1_280,                  // ~32k..160k per channel
+        "libopus" | "opus" => 12_000 + q * 600, // ~12k..72k per channel
+        _ => 16_000 + q * 800,                  // ~16k..96k per channel
     };
-    per_channel * channels.clamp(1, 2) as usize
+    let rate = per_channel * ch;
+    match source_bps {
+        // Not below 32k per channel: under that, the sound gets bad fast.
+        Some(src) if src > 0 => rate.min((src as usize).max(32_000 * ch)),
+        _ => rate,
+    }
 }
 
 fn audio_pipe(
@@ -320,6 +377,7 @@ fn audio_pipe(
     ist_index: usize,
     codec: ff::Codec,
     options: &ConvertOptions,
+    source_bps: Option<u64>,
 ) -> Result<AudioPipe, ConvertError> {
     let ist = ictx.stream(ist_index).ok_or_else(|| failed("audio stream missing"))?;
     let decoder = codec::context::Context::from_parameters(ist.parameters())?.decoder().audio()?;
@@ -373,7 +431,7 @@ fn audio_pipe(
     enc.set_time_base(enc_tb);
     let lossless = matches!(codec.name(), "flac" | "pcm_s16le");
     if !lossless {
-        enc.set_bit_rate(audio_bit_rate(codec.name(), options.quality, out_layout.channels() as u32));
+        enc.set_bit_rate(audio_bit_rate(codec.name(), options.quality, out_layout.channels() as u32, source_bps));
     }
     if global {
         enc.set_flags(codec::Flags::GLOBAL_HEADER);
@@ -451,6 +509,68 @@ impl AudioPipe {
     }
 }
 
+// ---------------------------------------------------------------- stream copy
+
+/// A stream that goes into the new file as it is (no decode, no encode).
+struct CopyPipe {
+    ist: usize,
+    ost: usize,
+    ist_tb: Rational,
+    ost_tb: Rational,
+}
+
+fn copy_pipe(
+    ictx: &format::context::Input,
+    octx: &mut format::context::Output,
+    ist_index: usize,
+) -> Result<CopyPipe, ConvertError> {
+    let ist = ictx.stream(ist_index).ok_or_else(|| failed("stream missing"))?;
+    let mut ost = octx.add_stream(encoder::find(codec::Id::None))?;
+    ost.set_parameters(ist.parameters());
+    unsafe {
+        // Let the muxer choose the tag that fits the new container.
+        (*ost.parameters().as_mut_ptr()).codec_tag = 0;
+    }
+    Ok(CopyPipe { ist: ist_index, ost: ost.index(), ist_tb: ist.time_base(), ost_tb: ist.time_base() })
+}
+
+impl CopyPipe {
+    fn write(&self, mut p: Packet, octx: &mut format::context::Output) -> Result<(), ConvertError> {
+        p.rescale_ts(self.ist_tb, self.ost_tb);
+        p.set_position(-1);
+        p.set_stream(self.ost);
+        p.write_interleaved(octx).map_err(|e| failed(format!("write: {e}")))
+    }
+}
+
+/// Bits per second of one stream, as the file says. None when the file does not say.
+fn stream_bps(ictx: &format::context::Input, index: usize) -> Option<u64> {
+    let st = ictx.stream(index)?;
+    let rate = unsafe { (*st.parameters().as_ptr()).bit_rate };
+    (rate > 0).then_some(rate as u64)
+}
+
+/// Bits per second of the original video and audio streams.
+/// When the file does not give the video rate, it is the file rate minus the audio rate.
+pub(crate) fn source_rates(
+    file_bytes: u64,
+    duration_us: i64,
+    video_bps: Option<u64>,
+    audio_bps: Option<u64>,
+    has_audio: bool,
+) -> (Option<u64>, Option<u64>) {
+    let total = if duration_us > 0 && file_bytes > 0 {
+        Some((file_bytes as f64 * 8.0 / (duration_us as f64 / 1_000_000.0)) as u64)
+    } else {
+        None
+    };
+    let video = video_bps.or_else(|| {
+        let audio = if has_audio { audio_bps.unwrap_or(128_000) } else { 0 };
+        total.map(|t| t.saturating_sub(audio)).filter(|v| *v > 0)
+    });
+    (video, audio_bps)
+}
+
 // ---------------------------------------------------------------- driver
 
 pub fn convert(
@@ -474,29 +594,59 @@ pub fn convert(
         .map(|s| s.index());
     let best_audio = ictx.streams().best(media::Type::Audio).map(|s| s.index());
 
-    let mut video = match (best_video, plan.video.is_empty()) {
-        (Some(i), false) => {
+    let file_bytes = std::fs::metadata(input).map(|m| m.len()).unwrap_or(0);
+    let (src_video_bps, src_audio_bps) = source_rates(
+        file_bytes,
+        ictx.duration(),
+        best_video.and_then(|i| stream_bps(&ictx, i)),
+        best_audio.and_then(|i| stream_bps(&ictx, i)),
+        best_audio.is_some(),
+    );
+    // Raw AAC (ADTS) needs a bitstream filter to go into MP4, so it is not copied.
+    let in_format = ictx.format().name().to_owned();
+    let adts = in_format.contains("mpegts") || in_format == "aac";
+    let may_copy = options.quality >= COPY_FROM_QUALITY;
+
+    let mut video = None;
+    let mut video_copy = None;
+    if let (Some(i), false) = (best_video, plan.video.is_empty()) {
+        let st = ictx.stream(i).ok_or_else(|| failed("video stream missing"))?;
+        let par = st.parameters();
+        let (w, h) = unsafe { ((*par.as_ptr()).width as u32, (*par.as_ptr()).height as u32) };
+        let fits = options.max_dimension == 0 || w.max(h) <= options.max_dimension;
+        if may_copy && fits && !plan.video_only && copy_ok(out_ext, par.id(), true) {
+            video_copy = Some(copy_pipe(&ictx, &mut octx, i)?);
+        } else {
             let codec = find_encoder(plan.video)
                 .ok_or_else(|| failed(format!("no video encoder for {out_ext} in this build")))?;
-            Some(video_pipe(&ictx, &mut octx, i, codec, out_ext, options)?)
+            video = Some(video_pipe(&ictx, &mut octx, i, codec, out_ext, options, src_video_bps)?);
         }
-        _ => None,
-    };
-    let mut audio = match (best_audio, plan.audio.is_empty() || plan.video_only) {
-        (Some(i), false) => {
+    }
+    let mut audio = None;
+    let mut audio_copy = None;
+    if let (Some(i), false) = (best_audio, plan.audio.is_empty() || plan.video_only) {
+        let id = ictx.stream(i).ok_or_else(|| failed("audio stream missing"))?.parameters().id();
+        if may_copy && copy_ok(out_ext, id, false) && !(id == codec::Id::AAC && adts) {
+            audio_copy = Some(copy_pipe(&ictx, &mut octx, i)?);
+        } else {
             let codec = find_encoder(plan.audio)
                 .ok_or_else(|| failed(format!("no audio encoder for {out_ext} in this build")))?;
-            Some(audio_pipe(&ictx, &mut octx, i, codec, options)?)
+            // The file often does not give the rate of lossy audio (for example Opus in WebM).
+            // Then use 128k, so the new audio is not bigger than usual music files.
+            let lossy = matches!(id, codec::Id::AAC | codec::Id::MP3 | codec::Id::OPUS | codec::Id::VORBIS);
+            let src = src_audio_bps.or(if lossy { Some(128_000) } else { None });
+            audio = Some(audio_pipe(&ictx, &mut octx, i, codec, options, src)?);
         }
-        _ => None,
-    };
+    }
+    let has_video = video.is_some() || video_copy.is_some();
+    let has_audio = audio.is_some() || audio_copy.is_some();
 
-    if video.is_none() && audio.is_none() {
+    if !has_video && !has_audio {
         return Err(ConvertError::Input {
             msg: if plan.video.is_empty() { "the file has no audio".into() } else { "the file has no video".into() },
         });
     }
-    if !plan.video.is_empty() && !plan.video_only && video.is_none() {
+    if !plan.video.is_empty() && !plan.video_only && !has_video {
         return Err(ConvertError::Input { msg: "the file has no video".into() });
     }
 
@@ -509,20 +659,26 @@ pub fn convert(
     if let Some(a) = audio.as_mut() {
         a.ost_tb = octx.stream(a.ost).unwrap().time_base();
     }
+    for c in [video_copy.as_mut(), audio_copy.as_mut()].into_iter().flatten() {
+        c.ost_tb = octx.stream(c.ost).unwrap().time_base();
+    }
 
     let duration = ictx.duration(); // in AV_TIME_BASE (microseconds)
     let mut last_report = -1.0f32;
     for (stream, packet) in ictx.packets() {
         let idx = stream.index();
+        let pts = packet.pts();
         if let Some(v) = video.as_mut().filter(|v| v.ist == idx) {
             v.send_packet(&packet, &mut octx)?;
         } else if let Some(a) = audio.as_mut().filter(|a| a.ist == idx) {
             a.send_packet(&packet, &mut octx)?;
+        } else if let Some(c) = [video_copy.as_ref(), audio_copy.as_ref()].into_iter().flatten().find(|c| c.ist == idx) {
+            c.write(packet, &mut octx)?;
         } else {
             continue;
         }
         if duration > 0 {
-            if let Some(pts) = packet.pts() {
+            if let Some(pts) = pts {
                 let tb = stream.time_base();
                 let secs = pts as f64 * f64::from(tb);
                 let frac = (secs * 1_000_000.0 / duration as f64) as f32 * 0.98;
@@ -542,4 +698,45 @@ pub fn convert(
     }
     octx.write_trailer()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn video_rate_never_above_source() {
+        // 720p at 30 fps, original 1 Mbit/s: the new rate is at most 85% of it.
+        let cap = video_cap(Some(1_000_000), 85, 1280.0 * 720.0, 1280.0 * 720.0);
+        assert_eq!(cap, Some(850_000));
+        assert!(video_bit_rate(1280, 720, 30.0, 85, cap) <= 850_000);
+        // Half the pixels: half the cap.
+        assert_eq!(video_cap(Some(1_000_000), 100, 100.0, 50.0), Some(500_000));
+        // No source rate: the formula only.
+        assert!(video_bit_rate(1280, 720, 30.0, 85, None) > 1_000_000);
+    }
+
+    #[test]
+    fn audio_rate_never_above_source() {
+        assert_eq!(audio_bit_rate("aac", 85, 2, Some(96_000)), 96_000);
+        assert_eq!(audio_bit_rate("aac", 85, 2, Some(32_000)), 64_000);
+        assert_eq!(audio_bit_rate("aac", 85, 2, None), (16_000 + 85 * 800) * 2);
+    }
+
+    #[test]
+    fn source_video_rate_from_file_size() {
+        // 20 MB over 100 s = 1.6 Mbit/s; minus 128k audio.
+        let (v, a) = source_rates(20_000_000, 100_000_000, None, None, true);
+        assert_eq!(v, Some(1_600_000 - 128_000));
+        assert_eq!(a, None);
+    }
+
+    #[test]
+    fn copy_rules() {
+        assert!(copy_ok("mp4", codec::Id::H264, true));
+        assert!(!copy_ok("mp4", codec::Id::VP9, true));
+        assert!(copy_ok("webm", codec::Id::VP9, true));
+        assert!(copy_ok("m4a", codec::Id::AAC, false));
+        assert!(!copy_ok("wav", codec::Id::PCM_S16LE, false));
+    }
 }
